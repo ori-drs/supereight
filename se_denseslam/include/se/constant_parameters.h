@@ -24,12 +24,14 @@ const float maxweight = 100.0f;
 /**
  * TODO
  */
-const float nearPlane = 0.4f;
+// const float nearPlane = 0.4f;
+const float nearPlane = 3.0f;
 
 /**
  * TODO
  */
-const float farPlane = 4.0f;
+// const float farPlane = 4.0f;
+const float farPlane = 20.0f;
 
 const float delta = 4.0f;
 

@@ -92,7 +92,7 @@ unsigned int buildAllocationList(HashType * allocationList, size_t reserved,
         Eigen::Vector3f voxelScaled = (voxelPos * inverseVoxelSize).array().floor();
         if( (voxelScaled.x() < size) && (voxelScaled.y() < size) &&
             (voxelScaled.z() < size) && (voxelScaled.x() >= 0) &&
-            (voxelScaled.y() >= 0) &&   (voxelScaled.z() >= 0)){
+            (voxelScaled.y() >= 0)   && (voxelScaled.z() >= 0)){
           voxel = voxelScaled.cast<int>();
           se::VoxelBlock<FieldType> * n = map_index.fetch(voxel.x(), 
               voxel.y(), voxel.z());
@@ -111,6 +111,68 @@ unsigned int buildAllocationList(HashType * allocationList, size_t reserved,
         }
         voxelPos +=step;
       }
+    }
+  }
+  const unsigned int written = voxelCount;
+  return written >= reserved ? reserved : written;
+}
+
+template <typename FieldType, template <typename> class OctreeT, typename HashType>
+unsigned int buildAllocationListCloud(HashType * allocationList, size_t reserved, OctreeT<FieldType>& map_index, const Eigen::Matrix4f& pose, const std::vector<Eigen::Vector3f> worldVerteices, const Eigen::Vector2i& imageSize, 
+                                const unsigned int size,  const float voxelSize, const float band) {
+
+  const float inverseVoxelSize = 1/voxelSize;
+  const unsigned block_scale = log2(size) - se::math::log2_const(se::VoxelBlock<FieldType>::side);
+
+#ifdef _OPENMP
+  std::atomic<unsigned int> voxelCount;
+#else
+  unsigned int voxelCount;
+#endif
+
+  const Eigen::Vector3f camera = pose.topRightCorner<3, 1>();
+
+  const int numSteps = ceil(band*inverseVoxelSize);
+  voxelCount = 0;
+#pragma omp parallel for
+  for (int y = 0; y < imageSize.y(); ++y) {
+    for (int x = 0; x < imageSize.x(); ++x) {
+      Eigen::Vector3f worldVertex = worldVerteices[x + y*imageSize.x()];
+      
+      Eigen::Vector3f direction = (camera - worldVertex).normalized();
+      
+      const Eigen::Vector3f origin = worldVertex - (band * 0.5f) * direction;
+      const Eigen::Vector3f step = (direction*band)/numSteps;
+
+      Eigen::Vector3i voxel;
+      Eigen::Vector3f voxelPos = origin;
+      
+      for(int i = 0; i < numSteps; i++){
+        Eigen::Vector3f voxelScaled = (voxelPos * inverseVoxelSize).array().floor();
+
+        if( (voxelScaled.x() < size) && (voxelScaled.y() < size) &&
+            (voxelScaled.z() < size) && (voxelScaled.x() >= 0)   &&
+            (voxelScaled.y() >= 0)   && (voxelScaled.z() >= 0)){
+          voxel = voxelScaled.cast<int>();
+          se::VoxelBlock<FieldType> * n = map_index.fetch(voxel.x(), voxel.y(), voxel.z());
+          if (!n){
+            // std::cout << "New voxel, allocating. ";
+            HashType k = map_index.hash(voxel.x(), voxel.y(), voxel.z(), block_scale);
+            unsigned int idx = voxelCount++;
+            if(idx < reserved) {
+              allocationList[idx] = k;
+            } else {
+              break;
+            }
+          } else {
+            n->active(true); 
+          }
+        } else {
+          // std::cout << "Out of bound. \n";
+        }
+        voxelPos +=step;
+      }
+
     }
   }
   const unsigned int written = voxelCount;

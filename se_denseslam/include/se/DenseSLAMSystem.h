@@ -92,6 +92,11 @@ class DenseSLAMSystem {
     Eigen::Matrix4f old_pose_;
     Eigen::Matrix4f raycast_pose_;
 
+    std::vector<Eigen::Vector3f> points_;
+    Eigen::Isometry3f sensor_pose_;
+    Eigen::Matrix4f lidar_k_;
+    int frame_;
+
   public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     
@@ -408,6 +413,12 @@ class DenseSLAMSystem {
     Eigen::Vector2i getComputationResolution() {
       return (computation_size_);
     }
+
+    void readPcdFile(int frame);
+    void readPoseFile(int frame);
+    int getFrame(void){ return frame_; }
+    void nextFrame(void){ frame_++; }
+    void fullVolume(void);
 };
 
 /**

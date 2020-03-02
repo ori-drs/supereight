@@ -97,11 +97,14 @@ int main(int argc, char ** argv) {
 	reader = createReader(&config);
 
 	//  =========  BASIC PARAMETERS  (input size / computation size )  =========
-	uint2 inputSize =
-			(reader != NULL) ? reader->getinputSize() : make_uint2(640, 480);
-	const uint2 computationSize = make_uint2(
-			inputSize.x / config.compute_size_ratio,
-			inputSize.y / config.compute_size_ratio);
+	// uint2 inputSize =
+	// 		(reader != NULL) ? reader->getinputSize() : make_uint2(640, 480);
+	// const uint2 computationSize = make_uint2(
+	// 		inputSize.x / config.compute_size_ratio,
+	// 		inputSize.y / config.compute_size_ratio);
+
+  uint2 inputSize = make_uint2(1, 7000);
+  uint2 computationSize = make_uint2(1, 7000);
 
 	//  =========  BASIC BUFFERS  (input / output )  =========
 
@@ -157,7 +160,8 @@ int main(int argc, char ** argv) {
 			std::cerr << "No valid input file specified\n";
 			exit(1);
 		}
-		while (processAll(reader, true, true, &config, false) == 0) {
+		// while (processAll(reader, true, true, &config, false) == 0) {
+    while (processAll(reader, true, false, &config, false) == 0) {
 		}
 		std::cout << __LINE__ << std::endl;
 	}
@@ -229,11 +233,18 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 
 		// Read frames and ground truth data if set
 		bool read_ok;
-		if (config->groundtruth_file == "") {
-			read_ok = reader->readNextDepthFrame(inputRGB, inputDepth);
-		} else {
-			read_ok = reader->readNextData(inputRGB, inputDepth, gt_pose);
-		}
+		// if (config->groundtruth_file == "") {
+		// 	read_ok = reader->readNextDepthFrame(inputRGB, inputDepth);
+		// } else {
+		// 	read_ok = reader->readNextData(inputRGB, inputDepth, gt_pose);
+		// }
+    frame = pipeline->getFrame();
+    if (frame <= 1){
+      read_ok = true;
+    } else {
+      read_ok = false;
+    }
+    pipeline->nextFrame();
 
 		// Finish processing if the next frame could not be read
 		if (!read_ok) {
@@ -242,31 +253,35 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 		}
 
 		// Process read frames
-		frame = reader->getFrameNumber() - frameOffset;
+		// frame = reader->getFrameNumber() - frameOffset;
 		if (powerMonitor != NULL && !firstFrame)
 			powerMonitor->start();
 
 		timings[1] = std::chrono::steady_clock::now();
 
-		pipeline->preprocessing(inputDepth,
-			Eigen::Vector2i(inputSize.x, inputSize.y),
-			config->bilateralFilter);
+		// pipeline->preprocessing(inputDepth,
+		// 	Eigen::Vector2i(inputSize.x, inputSize.y),
+		// 	config->bilateralFilter);
+    pipeline->readPcdFile(frame);
 
 		timings[2] = std::chrono::steady_clock::now();
 
-		if (config->groundtruth_file == "") {
-			// No ground truth used, call tracking.
-			tracked = pipeline->tracking(camera, config->icp_threshold,
-					config->tracking_rate, frame);
-		} else {
-			// Set the pose to the ground truth.
-			pipeline->setPose(gt_pose);
-			tracked = true;
-		}
+		// if (config->groundtruth_file == "") {
+		// 	// No ground truth used, call tracking.
+		// 	tracked = pipeline->tracking(camera, config->icp_threshold,
+		// 			config->tracking_rate, frame);
+		// } else {
+		// 	// Set the pose to the ground truth.
+		// 	pipeline->setPose(gt_pose);
+		// 	tracked = true;
+		// }
 
-		Eigen::Vector3f tmp = pipeline->getPosition();
-		pos = make_float3(tmp.x(), tmp.y(), tmp.z());
-		pose = pipeline->getPose();
+		// Eigen::Vector3f tmp = pipeline->getPosition();
+		// pos = make_float3(tmp.x(), tmp.y(), tmp.z());
+		// pose = pipeline->getPose();
+
+    pipeline->readPoseFile(frame);
+    tracked = true;
 
 		timings[3] = std::chrono::steady_clock::now();
 
@@ -285,6 +300,7 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 
 		timings[5] = std::chrono::steady_clock::now();
 	}
+
 	if (renderImages) {
 		pipeline->renderDepth((unsigned char*)depthRender, pipeline->getComputationResolution());
 		pipeline->renderTrack((unsigned char*)trackRender, pipeline->getComputationResolution());
@@ -292,7 +308,10 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 				(processFrame ? reader->getFrameNumber() - frameOffset : 0),
 				config->rendering_rate, camera, 0.75 * config->mu);
 		timings[6] = std::chrono::steady_clock::now();
-	}
+	} else {
+    pipeline->fullVolume();
+    timings[6] = std::chrono::steady_clock::now();
+  }
 
 	if (powerMonitor != NULL && !firstFrame)
 		powerMonitor->sample();
@@ -304,6 +323,12 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 	if(config->no_gui){
 		*logstream << reader->getFrameNumber() << "\t" << xt << "\t" << yt << "\t" << zt << "\t" << std::endl;
 	}
+
+  std::cout << frame << "," << pipeline->getComputationResolution()[0] << pipeline->getComputationResolution()[1];
+  for (int i = 1; i < 6; i++){
+    std::cout << "," << std::chrono::duration<double>(timings[i] - timings[i-1]).count();
+  }
+  std::cout << "\n";
 
 	//if (config->no_gui && (config->log_file == ""))
 	//	Stats.print();

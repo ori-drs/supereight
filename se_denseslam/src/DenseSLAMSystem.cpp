@@ -49,6 +49,7 @@
 #include "bfusion/alloc_impl.hpp"
 #include "kfusion/alloc_impl.hpp"
 
+#include <iostream>
 
 extern PerfStats Stats;
 static bool print_kernel_timing = false;
@@ -123,6 +124,9 @@ DenseSLAMSystem::DenseSLAMSystem(const Eigen::Vector2i& inputSize,
     discrete_vol_ptr_->init(volume_resolution_.x(), volume_dimension_.x());
     volume_ = Volume<FieldType>(volume_resolution_.x(), volume_dimension_.x(),
         discrete_vol_ptr_.get());
+
+    lidar_k_ = Eigen::Matrix4f::Identity();
+    frame_ = 1;
 }
 
 bool DenseSLAMSystem::preprocessing(const unsigned short * inputDepth,
@@ -193,11 +197,19 @@ bool DenseSLAMSystem::raycasting(const Eigen::Vector4f& k, float mu, unsigned in
   bool doRaycast = false;
 
   if(frame > 2) {
-    raycast_pose_ = pose_;
+    // raycast_pose_ = pose_;
+    raycast_pose_ = sensor_pose_.matrix();
+
     float step = volume_dimension_.x() / volume_resolution_.x();
-    raycastKernel(volume_, vertex_, normal_,
-        raycast_pose_ * getInverseCameraMatrix(k), nearPlane,
-        farPlane, mu, step, step*BLOCK_SIDE);
+
+    // raycastKernel(volume_, vertex_, normal_,
+    //     raycast_pose_ * getInverseCameraMatrix(k), nearPlane,
+    //     farPlane, mu, step, step*BLOCK_SIDE);
+    // Didn't quite figure out how to resize se::Image so I created two additional ones temporarily
+    se::Image<Eigen::Vector3f> vertex_lidar(computation_size_.x(), computation_size_.y());
+    se::Image<Eigen::Vector3f> normal_lidar(computation_size_.x(), computation_size_.y());
+    raycastKernelLidar(volume_, vertex_lidar, normal_lidar, raycast_pose_ * lidar_k_.inverse(), nearPlane, farPlane, mu, step, step*BLOCK_SIDE);
+
     doRaycast = true;
   }
   return doRaycast;
@@ -210,46 +222,63 @@ bool DenseSLAMSystem::integration(const Eigen::Vector4f& k, unsigned int integra
 
     float voxelsize =  volume_._dim/volume_._size;
     int num_vox_per_pix = volume_._dim/((se::VoxelBlock<FieldType>::side)*voxelsize);
-    size_t total = num_vox_per_pix * computation_size_.x() *
-      computation_size_.y();
+    // size_t total = num_vox_per_pix * computation_size_.x() *
+    //   computation_size_.y();
+    size_t total;
+    if(std::is_same<FieldType, SDF>::value) {
+      total = (4.0 * mu / voxelsize) * computation_size_.x() * computation_size_.y();
+    } else if(std::is_same<FieldType, OFusion>::value) {
+      total = (12.0 * mu / voxelsize) * computation_size_.x() * computation_size_.y();
+    }
     allocation_list_.reserve(total);
 
     unsigned int allocated = 0;
     if(std::is_same<FieldType, SDF>::value) {
-     allocated  = buildAllocationList(allocation_list_.data(),
-         allocation_list_.capacity(),
-        *volume_._map_index, pose_, getCameraMatrix(k), float_depth_.data(),
-        computation_size_, volume_._size,
-      voxelsize, 2*mu);
+     // allocated  = buildAllocationList(allocation_list_.data(),
+     //     allocation_list_.capacity(),
+     //    *volume_._map_index, pose_, getCameraMatrix(k), float_depth_.data(),
+     //    computation_size_, volume_._size,
+     //  voxelsize, 2*mu);
+      allocated = buildAllocationListCloud(allocation_list_.data(), allocation_list_.capacity(), *volume_._map_index, sensor_pose_.matrix(), points_, computation_size_, volume_._size, voxelsize, 2*mu);
+      
     } else if(std::is_same<FieldType, OFusion>::value) {
-     allocated = buildOctantList(allocation_list_.data(), allocation_list_.capacity(),
-         *volume_._map_index,
-         pose_, getCameraMatrix(k), float_depth_.data(), computation_size_, voxelsize,
-         compute_stepsize, step_to_depth, 6*mu);
+     // allocated = buildOctantList(allocation_list_.data(), allocation_list_.capacity(),
+     //     *volume_._map_index,
+     //     pose_, getCameraMatrix(k), float_depth_.data(), computation_size_, voxelsize,
+     //     compute_stepsize, step_to_depth, 6*mu);
+
+      allocated = buildOctantListCloud(allocation_list_.data(), allocation_list_.capacity(), *volume_._map_index, sensor_pose_.matrix(), points_, computation_size_, voxelsize, compute_stepsize, step_to_depth, 6*mu);
     }
 
     volume_._map_index->allocate(allocation_list_.data(), allocated);
 
     if(std::is_same<FieldType, SDF>::value) {
-      struct sdf_update funct(float_depth_.data(),
-          Eigen::Vector2i(computation_size_.x(), computation_size_.y()), mu, 100);
-      se::functor::projective_map(*volume_._map_index,
-          Sophus::SE3f(pose_).inverse(),
-          getCameraMatrix(k),
-          Eigen::Vector2i(computation_size_.x(), computation_size_.y()),
-          funct);
+      // struct sdf_update funct(float_depth_.data(),
+      //     Eigen::Vector2i(computation_size_.x(), computation_size_.y()), mu, 100);
+      // se::functor::projective_map(*volume_._map_index,
+      //     Sophus::SE3f(pose_).inverse(),
+      //     getCameraMatrix(k),
+      //     Eigen::Vector2i(computation_size_.x(), computation_size_.y()),
+      //     funct);
+
+      struct sdf_update_cloud funct(points_, sensor_pose_.matrix(), Eigen::Vector2i(computation_size_.x(), computation_size_.y()), mu, 100);
+      se::functor::projective_map(*volume_._map_index, Sophus::SE3f(sensor_pose_.matrix()).inverse(), lidar_k_, Eigen::Vector2i(computation_size_.x(), computation_size_.y()), funct);
     } else if(std::is_same<FieldType, OFusion>::value) {
 
-      float timestamp = (1.f/30.f)*frame;
-      struct bfusion_update funct(float_depth_.data(),
-          Eigen::Vector2i(computation_size_.x(), computation_size_.y()), 
-          mu, timestamp, voxelsize);
+      // float timestamp = (1.f/30.f)*frame;
+      // struct bfusion_update funct(float_depth_.data(),
+      //     Eigen::Vector2i(computation_size_.x(), computation_size_.y()), 
+      //     mu, timestamp, voxelsize);
 
-      se::functor::projective_map(*volume_._map_index,
-          Sophus::SE3f(pose_).inverse(),
-          getCameraMatrix(k),
-          Eigen::Vector2i(computation_size_.x(), computation_size_.y()),
-          funct);
+      // se::functor::projective_map(*volume_._map_index,
+      //     Sophus::SE3f(pose_).inverse(),
+      //     getCameraMatrix(k),
+      //     Eigen::Vector2i(computation_size_.x(), computation_size_.y()),
+      //     funct);
+
+      float timestamp = (2.f)*frame;
+      struct bfusion_update_cloud funct(points_, sensor_pose_.matrix(), Eigen::Vector2i(computation_size_.x(), computation_size_.y()), mu, timestamp, voxelsize);
+      se::functor::projective_map(*volume_._map_index, Sophus::SE3f(sensor_pose_.matrix()).inverse(), lidar_k_, Eigen::Vector2i(computation_size_.x(), computation_size_.y()), funct);
     }
 
     // if(frame % 15 == 0) {
@@ -319,4 +348,136 @@ void DenseSLAMSystem::dump_mesh(const std::string filename){
 
   se::algorithms::marching_cube(*volume_._map_index, select, inside, mesh);
   writeVtkMesh(filename.c_str(), mesh);
+}
+
+void DenseSLAMSystem::readPcdFile(int frame){
+  points_.clear();
+
+  std::string cloud_name = std::to_string(frame);
+  cloud_name = std::string(3 - cloud_name.length(), '0') + cloud_name;
+  std::stringstream ss_cloud_filename;
+
+  char const* home_directory = getenv("HOME");
+
+  ss_cloud_filename << home_directory << "/object_scan_data/18-11-2019-radcliffe-yiduo/flipped/pointclouds/" << cloud_name << ".pcd";
+  // ss_cloud_filename << home_directory << "/object_scan_data/test_point_cloud_4/" << cloud_name << ".pcd";
+
+  std::ifstream cloud_file_stream(ss_cloud_filename.str(), std::ios::in);
+
+  std::string line;
+  int line_num = 0;
+  int point_num = 0;
+  while (std::getline(cloud_file_stream, line)) {
+      line_num ++;
+
+      std::istringstream iss(line);
+
+      if (line_num <=11){
+        std::string header_info;
+        int header_content;
+        if (!(iss >> header_info >> header_content)){
+          continue;
+        }
+        if (header_info.compare("POINTS") != 0){
+          continue;
+        }
+        // std::cout << "There are " << header_content << " points in this pcd file according to its header. \n";
+      }
+
+      float x, y, z;
+
+      // std::string rgb; 
+      // std::string holder0, holder1, holder2; 
+      // if (!(iss >> x >> y >> z >> rgb >> holder0 >> holder1 >> holder2)) { 
+      //   continue; 
+      // }
+      if (!(iss >> x >> y >> z)) { 
+        continue; 
+      }
+      point_num ++;
+
+      Eigen::Vector3f point(x, y, z);
+      points_.push_back(point);
+  }
+
+  // std::cout << "Read " << line_num << " lines. \n";
+  // std::cout << "There are " << point_num << "/" << line_num << " on points. \n";
+  // std::cout << "There are " << points_.size() << " points in this pcd file according to content. \n";
+
+  computation_size_.y() = points_.size();
+}
+
+void DenseSLAMSystem::readPoseFile(int frame){
+  Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
+
+  std::string cloud_name = std::to_string(frame);
+  cloud_name = std::string(3 - cloud_name.length(), '0') + cloud_name;
+  std::stringstream ss_pose_filename;
+
+  char const* home_directory = getenv("HOME");
+
+  ss_pose_filename << home_directory << "/object_scan_data/18-11-2019-radcliffe-yiduo/flipped/poses/" << cloud_name << ".txt";
+  // ss_pose_filename << home_directory << "/object_scan_data/test_point_cloud_4/" << cloud_name << ".txt";
+
+  std::ifstream pose_file_stream(ss_pose_filename.str(), std::ios::in);
+
+  std::vector<double> tmp_sensor_pose; 
+  float num = 0.0;
+  while (pose_file_stream >> num) {
+    tmp_sensor_pose.push_back(num);
+  }
+
+  Eigen::Vector3f translation(tmp_sensor_pose[0], tmp_sensor_pose[1], tmp_sensor_pose[2]);
+  sensor_pose.translate(translation);
+
+  Eigen::Quaternionf rotation(tmp_sensor_pose[3], tmp_sensor_pose[4], tmp_sensor_pose[5], tmp_sensor_pose[6]);
+  sensor_pose.rotate(rotation);
+
+  sensor_pose_ = sensor_pose;
+  // std::cout << sensor_pose_.matrix() << "\n";
+}
+
+void DenseSLAMSystem::fullVolume(void){
+  std::string cloud_name = std::to_string(frame_-1);
+  cloud_name = std::string(3 - cloud_name.length(), '0') + cloud_name;
+  std::stringstream ss_path_filename;
+
+  char const* work_directory = getenv("PWD");
+
+  ss_path_filename << work_directory << "/slices/" << cloud_name << ".csv";
+  std::ofstream cloud_file;
+  cloud_file.open(ss_path_filename.str());
+  cloud_file << sensor_pose_.translation().x() << "," 
+             << sensor_pose_.translation().y() << ","
+             << sensor_pose_.translation().z() << ","
+             << Eigen::Quaternionf(sensor_pose_.rotation()).w() << ","
+             << Eigen::Quaternionf(sensor_pose_.rotation()).x() << ","
+             << Eigen::Quaternionf(sensor_pose_.rotation()).y() << ","
+             << Eigen::Quaternionf(sensor_pose_.rotation()).z() << ","
+             << 0.0 << "\n";
+
+  for (int x = 0; x < volume_._size; x++){
+    for (int y = 0; y < volume_._size; y++){
+      for (int z = 0; z < volume_._size; z++){
+        Eigen::Vector3f this_coord = volume_.pos(Eigen::Vector3i(x, y, z));
+    
+        se::VoxelBlock<FieldType>* block = volume_._map_index->fetch(x, y, z);
+        voxel_traits<FieldType>::value_type content = volume_.get(this_coord);
+
+        if (content.x != 1.0 || content.y != 0.0){
+          cloud_file << x << "," 
+                     << y << ","
+                     << z << ",";
+          cloud_file << this_coord.x() << ","
+                     << this_coord.y() << ","
+                     << this_coord.z() << ",";
+          cloud_file << content.x << "," << content.y << "\n";
+        }
+
+      }
+    }
+  }
+
+  cloud_file.close();
+
 }

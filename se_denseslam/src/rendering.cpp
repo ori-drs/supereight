@@ -89,6 +89,38 @@ void raycastKernel(const Volume<T>& volume, se::Image<Eigen::Vector3f>& vertex,
   TOCK("raycastKernel", inputSize.x * inputSize.y);
 }
 
+template<typename T>
+void raycastKernelLidar(const Volume<T>& volume, se::Image<Eigen::Vector3f>& vertex, se::Image<Eigen::Vector3f>& normal, const Eigen::Matrix4f& view, 
+                  const float nearPlane, const float farPlane, const float mu, const float step, const float largestep) {
+  TICK();
+  int y;
+#pragma omp parallel for shared(normal, vertex), private(y)
+  for (y = 0; y < vertex.height(); y++)
+#pragma simd
+    for (int x = 0; x < vertex.width(); x++) {
+
+      Eigen::Vector2i pos(x, y);
+      const Eigen::Vector3f dir = (view.topLeftCorner<3, 3>() * Eigen::Vector3f(x, y, 1.f)).normalized();
+      const Eigen::Vector3f transl = view.topRightCorner<3, 1>();
+      se::ray_iterator<T> ray(*volume._map_index, transl, dir, nearPlane, farPlane);
+      ray.next();
+      const float t_min = ray.tcmin(); /* Get distance to the first intersected block */
+
+      const Eigen::Vector4f hit = raycast(volume, transl, dir, t_min, ray.tmax(), mu, step, largestep);
+
+      vertex[x + y * vertex.width()] = hit.head<3>();
+      Eigen::Vector3f surfNorm = volume.grad(hit.head<3>(), [](const auto& val){ return val.x; });
+      if (surfNorm.norm() == 0) {
+        //normal[pos] = normalize(surfNorm); // APN added
+        normal[pos.x() + pos.y() * normal.width()] = Eigen::Vector3f(INVALID, 0, 0);
+      } else {
+        // Invert normals if SDF 
+        normal[pos.x() + pos.y() * normal.width()] = std::is_same<T, SDF>::value ? (-1.f * surfNorm).normalized() : surfNorm.normalized();
+      }
+    }
+  TOCK("raycastKernel", inputSize.x * inputSize.y);
+}
+
 // void renderNormalKernel(uchar3* out, const float3* normal, uint2 normalSize) {
 // 	TICK();
 // 	unsigned int y;

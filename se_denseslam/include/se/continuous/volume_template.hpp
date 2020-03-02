@@ -63,7 +63,8 @@ class VolumeTemplate {
 
     inline Eigen::Vector3f pos(const Eigen::Vector3i & p) const {
       static const float voxelSize = _dim/_size;
-      return p.cast<float>() * voxelSize;
+      // return p.cast<float>() * voxelSize;
+      return p.cast<float>() * voxelSize + Eigen::Vector3f(0.5f, 0.5f, 0.5f) * voxelSize;
     }
 
     void set(const  Eigen::Vector3f& , const value_type& ) {}

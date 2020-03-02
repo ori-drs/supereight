@@ -127,4 +127,72 @@ size_t buildOctantList(HashType* allocationList, size_t reserved,
   }
   return (size_t) voxelCount >= reserved ? reserved : (size_t) voxelCount;
 }
+
+template <typename FieldType, template <typename> class OctreeT, typename HashType, typename StepF, typename DepthF>
+size_t buildOctantListCloud(HashType* allocationList, size_t reserved, OctreeT<FieldType>& map_index, const Eigen::Matrix4f& pose, const std::vector<Eigen::Vector3f> worldVertices, const Eigen::Vector2i &imageSize, 
+                      const float voxelSize, StepF compute_stepsize, DepthF step_to_depth, const float band) {
+
+  const float inverseVoxelSize = 1.f/voxelSize;
+  const int size = map_index.size();
+  const int max_depth = log2(size);
+  const int leaves_depth = max_depth - se::math::log2_const(OctreeT<FieldType>::blockSide);
+
+#ifdef _OPENMP
+  std::atomic<unsigned int> voxelCount;
+  std::atomic<unsigned int> leavesCount;
+#else
+  unsigned int voxelCount;
+#endif
+
+  const Eigen::Vector3f camera = pose.topRightCorner<3, 1>();
+  voxelCount = 0;
+#pragma omp parallel for
+  for (int y = 0; y < imageSize.y(); ++y) {
+    for (int x = 0; x < imageSize.x(); ++x) {
+
+      int tree_depth = max_depth; 
+      float stepsize = voxelSize;
+
+      Eigen::Vector3f worldVertex = worldVertices[x + y*imageSize.x()];
+
+      Eigen::Vector3f direction = (camera - worldVertex).normalized();
+      const Eigen::Vector3f origin = worldVertex - (band * 0.5f) * direction;
+      const float dist = (camera - origin).norm(); 
+      Eigen::Vector3f step = direction*stepsize;
+
+      Eigen::Vector3f voxelPos = origin;
+      float travelled = 0.f;
+      for(; travelled < dist; travelled += stepsize){
+
+        Eigen::Vector3f voxelScaled = (voxelPos * inverseVoxelSize).array().floor();
+        if( (voxelScaled.x() < size) && (voxelScaled.y() < size) &&
+            (voxelScaled.z() < size) && (voxelScaled.x() >= 0)   &&
+            (voxelScaled.y() >= 0)   && (voxelScaled.z() >= 0)){
+          const Eigen::Vector3i voxel = voxelScaled.cast<int>();
+          auto node_ptr = map_index.fetch_octant(voxel.x(), voxel.y(), voxel.z(), tree_depth);
+          if(!node_ptr){
+            HashType k = map_index.hash(voxel.x(), voxel.y(), voxel.z(), std::min(tree_depth, leaves_depth));
+            unsigned int idx = voxelCount++;
+            if(idx < reserved) {
+              allocationList[idx] = k;
+            }
+          } else if(tree_depth >= leaves_depth) { 
+            static_cast<se::VoxelBlock<FieldType>*>(node_ptr)->active(true);
+          }
+        }
+        stepsize = compute_stepsize(travelled, band, voxelSize);  
+        // int last_depth = tree_depth;
+        tree_depth = step_to_depth(stepsize, max_depth, voxelSize);
+        // if(tree_depth != last_depth) {
+        //   std::cout << "Break Here!" << std::endl;
+        // }
+        
+        step = direction*stepsize;
+        voxelPos +=step;
+      }
+    }
+  }
+  return (size_t) voxelCount >= reserved ? reserved : (size_t) voxelCount;
+}
+
 #endif

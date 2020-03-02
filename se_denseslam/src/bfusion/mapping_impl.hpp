@@ -189,4 +189,72 @@ struct bfusion_update {
   float timestamp;
   float voxelsize;
 };
+
+struct bfusion_update_cloud {
+
+  template <typename DataHandlerT>
+  void operator()(DataHandlerT& handler, const Eigen::Vector3i&, const Eigen::Vector3f& pos, const Eigen::Vector2f& pixel) {
+
+    Eigen::Vector3f ray_unit = pos.normalized();
+    std::vector<double> angles;
+    angles.resize(units.size());
+#pragma omp parallel for
+    for (int i = 0; i < units.size(); i++){
+      angles[i] = units[i].dot(ray_unit);
+    }
+
+    int max_index = std::distance(angles.begin(), max_element(angles.begin(), angles.end()));
+
+    const float depthSample = depths[max_index];
+
+    if (std::acos(angles[max_index])/M_PI*180.0 > 0.3){
+      return;
+    }
+
+    if (depthSample <=  0) {
+      return;
+    }
+
+    const float diff = (pos(2) - depthSample) * std::sqrt( 1 + se::math::sq(pos(0) / pos(2)) + se::math::sq(pos(1) / pos(2)));
+    float sigma = se::math::clamp(noiseFactor * se::math::sq(pos(2)), 2*voxelsize, 0.05f);
+    float sample = HNew(diff/sigma, pos(2));
+    if(sample == 0.5f) {
+      return;
+    }
+    sample = se::math::clamp(sample, 0.03f, 0.97f);
+    auto data = handler.get();
+    const double delta_t = timestamp - data.y;
+    data.x = applyWindow(data.x, SURF_BOUNDARY, delta_t, CAPITAL_T);
+    data.x = se::math::clamp(updateLogs(data.x, sample), BOTTOM_CLAMP, TOP_CLAMP);
+    data.y = timestamp;
+    handler.set(data);
+  } 
+
+  bfusion_update_cloud(const std::vector<Eigen::Vector3f> cloud, const Eigen::Matrix4f pose, const Eigen::Vector2i framesize, float n, float t, float vs) : points(cloud), lidar_pose(pose), depthSize(framesize), noiseFactor(n), timestamp(t), voxelsize(vs){
+    depths.resize(points.size());
+    units.resize(points.size());
+
+    Eigen::Isometry3f sensor_pose;
+    sensor_pose.matrix() = lidar_pose;
+
+    for (int i = 0; i < points.size(); i ++){
+      Eigen::Vector3f local_vector = (pose.inverse() * points[i].homogeneous()).head<3>();
+
+      depths[i] = local_vector.norm();
+      units[i] = local_vector.normalized();
+    }
+
+  };
+
+  std::vector<Eigen::Vector3f> points;
+  Eigen::Matrix4f lidar_pose;
+  std::vector<float> depths;
+  std::vector<Eigen::Vector3f> units;
+
+  Eigen::Vector2i depthSize;
+  float noiseFactor;
+  float timestamp;
+  float voxelsize;
+};
+
 #endif

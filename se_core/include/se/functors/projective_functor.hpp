@@ -110,6 +110,42 @@ namespace functor {
         block->active(is_visible);
       }
 
+      void update_block_lidar(se::VoxelBlock<FieldType> * block, const float voxel_size) {
+
+        const Eigen::Vector3i blockCoord = block->coordinates();
+        const Eigen::Vector3f delta = _Tcw.rotationMatrix() * Eigen::Vector3f(voxel_size, 0, 0);
+        const Eigen::Vector3f cameraDelta = _K.topLeftCorner<3,3>() * delta;
+        bool is_visible = false;
+
+        unsigned int y, z, blockSide; 
+        blockSide = se::VoxelBlock<FieldType>::side;
+        unsigned int ylast = blockCoord(1) + blockSide;
+        unsigned int zlast = blockCoord(2) + blockSide;
+
+        for(z = blockCoord(2); z < zlast; ++z)
+          for (y = blockCoord(1); y < ylast; ++y){
+            Eigen::Vector3i pix = Eigen::Vector3i(blockCoord(0), y, z);
+            Eigen::Vector3f start = _Tcw * Eigen::Vector3f((pix(0)) * voxel_size, 
+                (pix(1)) * voxel_size, (pix(2)) * voxel_size);
+            Eigen::Vector3f camerastart = _K.topLeftCorner<3,3>() * start;
+#pragma omp simd
+            for (unsigned int x = 0; x < blockSide; ++x){
+              pix(0) = x + blockCoord(0); 
+              const Eigen::Vector3f camera_voxel = camerastart + (x*cameraDelta);
+              const Eigen::Vector3f pos = start + (x*delta);
+
+              const float inverse_depth = 1.f / std::sqrt( se::math::sq(camera_voxel(0)) + se::math::sq(camera_voxel(1)));
+              const Eigen::Vector2f pixel = Eigen::Vector2f(camera_voxel(1) * inverse_depth, camera_voxel(2) * inverse_depth);
+
+              is_visible = true;
+
+              VoxelBlockHandler<FieldType> handler = {block, pix};
+              _function(handler, pix, pos, pixel);
+            }
+          }
+        block->active(is_visible);
+      }
+
       void update_node(se::Node<FieldType> * node, const float voxel_size) { 
         const Eigen::Vector3i voxel = Eigen::Vector3i(unpack_morton(node->code_));
         const Eigen::Vector3f delta = _Tcw.rotationMatrix() * Eigen::Vector3f::Constant(0.5f * voxel_size * node->side_);
@@ -136,6 +172,27 @@ namespace functor {
         }
       }
 
+      void update_node_lidar(se::Node<FieldType> * node, const float voxel_size) { 
+        const Eigen::Vector3i voxel = Eigen::Vector3i(unpack_morton(node->code_));
+        const Eigen::Vector3f delta = _Tcw.rotationMatrix() * Eigen::Vector3f::Constant(0.5f * voxel_size * node->side_);
+        const Eigen::Vector3f delta_c = _K.topLeftCorner<3,3>() * delta;
+        Eigen::Vector3f base_cam = _Tcw * (voxel_size * voxel.cast<float> ());
+        Eigen::Vector3f basepix_hom = _K.topLeftCorner<3,3>() * base_cam;
+
+#pragma omp simd
+        for(int i = 0; i < 8; ++i) {
+          const Eigen::Vector3i dir =  Eigen::Vector3i((i & 1) > 0, (i & 2) > 0, (i & 4) > 0);
+          const Eigen::Vector3f vox_cam = base_cam + dir.cast<float>().cwiseProduct(delta); 
+          const Eigen::Vector3f pix_hom = basepix_hom + dir.cast<float>().cwiseProduct(delta_c); 
+
+          const float inverse_depth = 1.f / std::sqrt( se::math::sq(pix_hom(0)) + se::math::sq(pix_hom(1)));
+          const Eigen::Vector2f pixel = Eigen::Vector2f(pix_hom(1) * inverse_depth, pix_hom(2) * inverse_depth);
+
+          NodeHandler<FieldType> handler = {node, i};
+          _function(handler, voxel + dir, vox_cam, pixel);
+        }
+      }
+
       void apply() {
 
         build_active_list();
@@ -143,7 +200,8 @@ namespace functor {
         size_t list_size = _active_list.size();
 #pragma omp parallel for
         for(unsigned int i = 0; i < list_size; ++i){
-          update_block(_active_list[i], voxel_size);
+          // update_block(_active_list[i], voxel_size);
+          update_block_lidar(_active_list[i], voxel_size);
         }
         _active_list.clear();
 
@@ -151,7 +209,8 @@ namespace functor {
         list_size = nodes_list.size();
 #pragma omp parallel for
           for(unsigned int i = 0; i < list_size; ++i){
-            update_node(nodes_list[i], voxel_size);
+            // update_node(nodes_list[i], voxel_size);
+            update_node_lidar(nodes_list[i], voxel_size);
          }
       }
 
