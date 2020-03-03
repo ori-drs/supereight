@@ -334,11 +334,13 @@ Configuration parseArgs(unsigned int argc, char ** argv) {
         config.input_file = optarg;
         std::cerr << "update input_file to " << config.input_file
           << std::endl;
-        struct stat st;
-        if (stat(config.input_file.c_str(), &st) != 0) {
-          std::cerr << "ERROR: --input-file (-i) does not exist (was "
-            << config.input_file << ")\n";
-          flagErr++;
+        if (config.input_file.substr(config.input_file.length() - 1, 1) != "/"){
+          struct stat st;
+          if (stat(config.input_file.c_str(), &st) != 0) {
+            std::cerr << "ERROR: --input-file (-i) does not exist (was "
+              << config.input_file << ")\n";
+            flagErr++;
+          }
         }
         break;
       case 'k':    //   -k  (--camera)

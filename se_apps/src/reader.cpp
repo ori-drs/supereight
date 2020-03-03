@@ -193,6 +193,11 @@ DepthReader *createReader(Configuration *config, std::string filename) {
   else if (filename.substr(filename.length() - 4, 4) == ".raw") {
     // Slambench 1.0 raw reader
     reader = new RawDepthReader(reader_config);
+  }
+  else if (filename.substr(filename.length() - 1, 1) == "/") {
+    // Point cloud reader
+    reader = new CloudReader(reader_config);
+    reader->setIsInputCloud(true);
   } else {
     std::cerr << "Unrecognised file format file not loaded\n";
     reader = NULL;

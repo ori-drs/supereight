@@ -97,14 +97,11 @@ int main(int argc, char ** argv) {
 	reader = createReader(&config);
 
 	//  =========  BASIC PARAMETERS  (input size / computation size )  =========
-	// uint2 inputSize =
-	// 		(reader != NULL) ? reader->getinputSize() : make_uint2(640, 480);
-	// const uint2 computationSize = make_uint2(
-	// 		inputSize.x / config.compute_size_ratio,
-	// 		inputSize.y / config.compute_size_ratio);
-
-  uint2 inputSize = make_uint2(1, 7000);
-  uint2 computationSize = make_uint2(1, 7000);
+	uint2 inputSize =
+			(reader != NULL) ? reader->getinputSize() : make_uint2(640, 480);
+	const uint2 computationSize = make_uint2(
+			inputSize.x / config.compute_size_ratio,
+			inputSize.y / config.compute_size_ratio);
 
 	//  =========  BASIC BUFFERS  (input / output )  =========
 
@@ -206,6 +203,10 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 		Configuration *config, bool reset) {
 	static int frameOffset = 0;
 	static bool firstFrame = true;
+	
+	bool is_input_cloud = reader->getIsInputCloud();
+	std::vector<Eigen::Vector3f> inputCloud; 
+
 	bool tracked = false, integrated = false, raycasted = false;
 	std::chrono::time_point<std::chrono::steady_clock> timings[7];
 	float3 pos;
@@ -233,11 +234,21 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 
 		// Read frames and ground truth data if set
 		bool read_ok;
-		// if (config->groundtruth_file == "") {
-		// 	read_ok = reader->readNextDepthFrame(inputRGB, inputDepth);
-		// } else {
-		// 	read_ok = reader->readNextData(inputRGB, inputDepth, gt_pose);
-		// }
+
+    if (is_input_cloud){
+      if (config->groundtruth_file == "") {
+        read_ok = reader->readNextCloud(inputCloud);
+      } else {
+        read_ok = reader->readNextData(inputCloud, gt_pose);
+      }
+    } else {
+			if (config->groundtruth_file == "") {
+				read_ok = reader->readNextDepthFrame(inputRGB, inputDepth);
+			} else {
+				read_ok = reader->readNextData(inputRGB, inputDepth, gt_pose);
+			}
+    }
+    
     frame = pipeline->getFrame();
     if (frame <= 1){
       read_ok = true;
@@ -253,16 +264,19 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 		}
 
 		// Process read frames
-		// frame = reader->getFrameNumber() - frameOffset;
+		frame = reader->getFrameNumber() - frameOffset;
 		if (powerMonitor != NULL && !firstFrame)
 			powerMonitor->start();
 
 		timings[1] = std::chrono::steady_clock::now();
 
-		// pipeline->preprocessing(inputDepth,
-		// 	Eigen::Vector2i(inputSize.x, inputSize.y),
-		// 	config->bilateralFilter);
-    pipeline->readPcdFile(frame);
+    if (is_input_cloud) {
+    	pipeline->readPcdFile(frame);
+    } else {
+			pipeline->preprocessing(inputDepth,
+				Eigen::Vector2i(inputSize.x, inputSize.y),
+				config->bilateralFilter);
+    }
 
 		timings[2] = std::chrono::steady_clock::now();
 
@@ -309,7 +323,7 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 				config->rendering_rate, camera, 0.75 * config->mu);
 		timings[6] = std::chrono::steady_clock::now();
 	} else {
-    pipeline->fullVolume();
+    // pipeline->fullVolume();
     timings[6] = std::chrono::steady_clock::now();
   }
 

@@ -29,7 +29,7 @@
 #include "sys/stat.h"
 
 enum ReaderType {
-  READER_RAW, READER_SCENE, READER_OPENNI
+  READER_RAW, READER_SCENE, READER_OPENNI, READER_CLOUD
 };
 
 struct ReaderConfiguration {
@@ -56,9 +56,13 @@ class DepthReader {
     virtual bool readNextDepthFrame(uchar3*              raw_rgb,
                                     unsigned short int * depthMap) = 0;
 
+    virtual bool readNextCloud(std::vector<Eigen::Vector3f>& cloud){return false;};
+
     virtual bool readNextData(uchar3*          ,
                               uint16_t*        ,
                               Eigen::Matrix4f& ) {return false;};
+
+    virtual bool readNextData(std::vector<Eigen::Vector3f>& cloud, Eigen::Matrix4f& gt_pose) {return false;};
 
     virtual Eigen::Vector4f getK() = 0;
 
@@ -153,8 +157,12 @@ class DepthReader {
       }
     }
 
+    void setIsInputCloud(bool is_input_cloud){is_input_cloud_ = is_input_cloud;};
+    bool getIsInputCloud(void){return is_input_cloud_;};
+
     bool cameraActive;
     bool cameraOpen;
+
   protected:
     int _frame;
     size_t _pose_num;
@@ -164,6 +172,8 @@ class DepthReader {
     std::string _groundtruth_path;
     std::ifstream _gt_file;
     Eigen::Matrix4f _transform;
+
+    bool is_input_cloud_;
 };
 
 static const float SceneK[3][3] = { { 481.20, 0.00, 319.50 }, { 0.00, -480.00,
@@ -492,6 +502,182 @@ class RawDepthReader: public DepthReader {
      */
     inline Eigen::Vector4f getK() {
       return Eigen::Vector4f(531.15, 531.15, 640 / 2, 480 / 2);
+    }
+
+};
+
+class CloudReader: public DepthReader{
+  private:
+    uint2 _inSize;
+    bool _gt_in_one_file;
+
+  public:
+    CloudReader(const ReaderConfiguration& config) : DepthReader(), 
+                                                     _gt_in_one_file(true)
+    {
+        _data_path = config.data_path;
+        _groundtruth_path = config.groundtruth_path;
+
+        // Need to make this automatic
+        _inSize = make_uint2(1, 7000);
+
+        // Open ground truth association file if supplied
+        if (_groundtruth_path != "") {
+          if (_groundtruth_path.substr(_groundtruth_path.length() - 1, 1) == "/"){
+            _gt_in_one_file = false;
+          } else {
+            _gt_file.open(_groundtruth_path.c_str());
+            _gt_in_one_file = true;
+            if(!_gt_file.is_open()) {
+              std::cout << "Failed to open ground truth association file " << _groundtruth_path << "\n";
+              return;
+            }
+          }
+          _pose_num = 0;
+        }
+        _frame = 0;
+        cameraOpen = true;
+        cameraActive = true;
+      };
+
+    ReaderType getType() {
+      return (READER_CLOUD);
+    }
+
+    inline bool readNextDepthFrame(uchar3* raw_rgb, unsigned short int * depthMap) {
+      std::cout << "This is the reader for cloud. RGB is not available. \n"; 
+      return false;
+    }
+
+    inline void restart() {
+      _frame = 0;
+      _pose_num = 0;
+    }
+
+    inline bool readNextDepthFrame(float * depthMap) {
+      std::cout << "This is the reader for cloud. \n";
+      return false;
+    }
+
+    inline bool readNextCloud(std::vector<Eigen::Vector3f>& cloud){
+      get_next_frame();
+
+      cloud.clear();
+
+      std::string cloud_name = std::to_string(_frame);
+      cloud_name = std::string(3 - cloud_name.length(), '0') + cloud_name;
+      std::stringstream ss_cloud_filename;
+
+      char const* home_directory = getenv("HOME");
+
+      ss_cloud_filename << home_directory << _data_path << cloud_name << ".pcd";
+
+      std::ifstream cloud_file_stream(ss_cloud_filename.str(), std::ios::in);
+
+      if (!cloud_file_stream.is_open()){
+        std::cout << "Fail to open point cloud file " << ss_cloud_filename.str() << "\n";
+        return false;
+      }
+
+      std::string line;
+      int line_num = 0;
+      int point_num = 0;
+      while (std::getline(cloud_file_stream, line)) {
+          line_num ++;
+
+          std::istringstream iss(line);
+
+          if (line_num <=11){
+            std::string header_info;
+            int header_content;
+            if (!(iss >> header_info >> header_content)){
+              continue;
+            }
+            if (header_info.compare("POINTS") != 0){
+              continue;
+            }
+          }
+
+          float x, y, z;
+
+          if (!(iss >> x >> y >> z)) { 
+            continue; 
+          }
+          point_num ++;
+
+          Eigen::Vector3f point(x, y, z);
+          cloud.push_back(point);
+      }
+
+      return false;
+    }
+
+    inline bool readNextData(uchar3* rgb_image, uint16_t* depth_image, Eigen::Matrix4f& pose) {
+      std::cout << "This is the reader for cloud. \n";
+      return false;
+    }
+
+    inline bool readNextData(std::vector<Eigen::Vector3f>& cloud, Eigen::Matrix4f& pose){
+      bool res_cloud = false, res_pose = false;
+
+      res_cloud = readNextCloud(cloud);
+
+      if (_gt_in_one_file){
+        res_pose = readNextPose(pose);
+      } else {
+        res_pose = readNextPoseCloud(pose);
+      }
+
+      return res_cloud && res_pose;
+    }
+
+    inline bool readNextPoseCloud(Eigen::Matrix4f& pose){
+      Eigen::Isometry3f sensor_pose = Eigen::Isometry3f::Identity();
+
+      std::string cloud_name = std::to_string(_frame);
+      cloud_name = std::string(3 - cloud_name.length(), '0') + cloud_name;
+      std::stringstream ss_pose_filename;
+
+      char const* home_directory = getenv("HOME");
+
+      ss_pose_filename << home_directory << _groundtruth_path << cloud_name << ".txt";
+
+      std::ifstream pose_file_stream(ss_pose_filename.str(), std::ios::in);
+
+      if (!pose_file_stream.is_open()){
+        std::cout << "Fail to open ground truth association file " << ss_pose_filename.str() << "\n";
+        return false;
+      }
+
+      std::vector<double> tmp_sensor_pose; 
+      float num = 0.0;
+      while (pose_file_stream >> num) {
+        tmp_sensor_pose.push_back(num);
+      }
+
+      if (tmp_sensor_pose.size() != 7){
+        std::cout << "The number of floats in this file is wrong. \n";
+        return false;
+      }
+
+      Eigen::Vector3f translation(tmp_sensor_pose[0], tmp_sensor_pose[1], tmp_sensor_pose[2]);
+      sensor_pose.translate(translation);
+
+      Eigen::Quaternionf rotation(tmp_sensor_pose[3], tmp_sensor_pose[4], tmp_sensor_pose[5], tmp_sensor_pose[6]);
+      sensor_pose.rotate(rotation);
+
+      pose = sensor_pose.matrix();
+      // std::cout << pose.matrix() << "\n";
+
+      return true;
+    }
+
+    inline uint2 getinputSize() {
+      return _inSize;
+    }
+
+    inline Eigen::Vector4f getK() {
+      return Eigen::Vector4f(1.0, 1.0, 0.0, 0.0);
     }
 
 };
