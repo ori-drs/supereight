@@ -93,9 +93,6 @@ class DenseSLAMSystem {
     Eigen::Matrix4f raycast_pose_;
 
     std::vector<Eigen::Vector3f> points_;
-    Eigen::Isometry3f sensor_pose_;
-    Eigen::Matrix4f lidar_k_;
-    int frame_;
 
   public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -200,6 +197,11 @@ class DenseSLAMSystem {
                      float                  mu,
                      unsigned               frame);
 
+    bool integrationCloud(const Eigen::Vector4f& k,
+                     unsigned               integration_rate,
+                     float                  mu,
+                     unsigned               frame);
+
     /**
      * Raycast the 3D reconstruction after integration to update the values of
      * the TSDF. This is the fourth stage of the pipeline.
@@ -215,6 +217,10 @@ class DenseSLAMSystem {
      * \return true if raycasting was performed and false if it wasn't.
      */
     bool raycasting(const Eigen::Vector4f& k,
+                    float                  mu,
+                    unsigned int           frame);
+
+    bool raycastingCloud(const Eigen::Vector4f& k,
                     float                  mu,
                     unsigned int           frame);
 
@@ -414,11 +420,9 @@ class DenseSLAMSystem {
       return (computation_size_);
     }
 
-    void readPcdFile(int frame);
-    void readPoseFile(int frame);
-    int getFrame(void){ return frame_; }
-    void nextFrame(void){ frame_++; }
-    void fullVolume(void);
+    void setPointCloud(std::vector<Eigen::Vector3f> inputCloud);
+    void saveFullVolume(int frame);
+
 };
 
 /**

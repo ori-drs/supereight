@@ -157,8 +157,8 @@ int main(int argc, char ** argv) {
 			std::cerr << "No valid input file specified\n";
 			exit(1);
 		}
-		// while (processAll(reader, true, true, &config, false) == 0) {
-    while (processAll(reader, true, false, &config, false) == 0) {
+		bool renderImages = !reader->getIsInputCloud();
+		while (processAll(reader, true, renderImages, &config, false) == 0) {
 		}
 		std::cout << __LINE__ << std::endl;
 	}
@@ -203,13 +203,13 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 		Configuration *config, bool reset) {
 	static int frameOffset = 0;
 	static bool firstFrame = true;
-	
-	bool is_input_cloud = reader->getIsInputCloud();
-	std::vector<Eigen::Vector3f> inputCloud; 
-
 	bool tracked = false, integrated = false, raycasted = false;
 	std::chrono::time_point<std::chrono::steady_clock> timings[7];
 	float3 pos;
+
+	bool is_input_cloud = reader->getIsInputCloud();
+	std::vector<Eigen::Vector3f> inputCloud; 
+
 	int frame = 0;
 	const uint2 inputSize =
 			(reader != NULL) ? reader->getinputSize() : make_uint2(640, 480);
@@ -249,14 +249,6 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 			}
     }
     
-    frame = pipeline->getFrame();
-    if (frame <= 1){
-      read_ok = true;
-    } else {
-      read_ok = false;
-    }
-    pipeline->nextFrame();
-
 		// Finish processing if the next frame could not be read
 		if (!read_ok) {
 			timings[0] = std::chrono::steady_clock::now();
@@ -270,47 +262,52 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 
 		timings[1] = std::chrono::steady_clock::now();
 
-    if (is_input_cloud) {
-    	pipeline->readPcdFile(frame);
-    } else {
+    if (!is_input_cloud) {
 			pipeline->preprocessing(inputDepth,
 				Eigen::Vector2i(inputSize.x, inputSize.y),
 				config->bilateralFilter);
+    } else {
+    	pipeline->setPointCloud(inputCloud);
     }
 
 		timings[2] = std::chrono::steady_clock::now();
 
-		// if (config->groundtruth_file == "") {
-		// 	// No ground truth used, call tracking.
-		// 	tracked = pipeline->tracking(camera, config->icp_threshold,
-		// 			config->tracking_rate, frame);
-		// } else {
-		// 	// Set the pose to the ground truth.
-		// 	pipeline->setPose(gt_pose);
-		// 	tracked = true;
-		// }
+		if (config->groundtruth_file == "") {
+			// No ground truth used, call tracking.
+			tracked = pipeline->tracking(camera, config->icp_threshold,
+					config->tracking_rate, frame);
+		} else {
+			// Set the pose to the ground truth.
+			pipeline->setPose(gt_pose);
+			tracked = true;
+		}
 
-		// Eigen::Vector3f tmp = pipeline->getPosition();
-		// pos = make_float3(tmp.x(), tmp.y(), tmp.z());
-		// pose = pipeline->getPose();
-
-    pipeline->readPoseFile(frame);
-    tracked = true;
+		Eigen::Vector3f tmp = pipeline->getPosition();
+		pos = make_float3(tmp.x(), tmp.y(), tmp.z());
+		pose = pipeline->getPose();
 
 		timings[3] = std::chrono::steady_clock::now();
 
 		// Integrate only if tracking was successful or it is one of the
 		// first 4 frames.
 		if (tracked || (frame <= 3)) {
-			integrated = pipeline->integration(camera,
-					config->integration_rate, config->mu, frame);
+			if (is_input_cloud){
+				integrated = pipeline->integrationCloud(camera,
+						config->integration_rate, config->mu, frame);
+			} else {
+				integrated = pipeline->integration(camera,
+						config->integration_rate, config->mu, frame);			}
 		} else {
 			integrated = false;
 		}
 
 		timings[4] = std::chrono::steady_clock::now();
 
-		raycasted = pipeline->raycasting(camera, config->mu, frame);
+		if (is_input_cloud){
+			raycasted = pipeline->raycastingCloud(camera, config->mu, frame);
+		} else {
+			raycasted = pipeline->raycasting(camera, config->mu, frame);
+		}
 
 		timings[5] = std::chrono::steady_clock::now();
 	}
@@ -323,7 +320,7 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 				config->rendering_rate, camera, 0.75 * config->mu);
 		timings[6] = std::chrono::steady_clock::now();
 	} else {
-    // pipeline->fullVolume();
+    // pipeline->saveFullVolume(frame);
     timings[6] = std::chrono::steady_clock::now();
   }
 
@@ -338,7 +335,7 @@ int processAll(DepthReader *reader, bool processFrame, bool renderImages,
 		*logstream << reader->getFrameNumber() << "\t" << xt << "\t" << yt << "\t" << zt << "\t" << std::endl;
 	}
 
-  std::cout << frame << "," << pipeline->getComputationResolution()[0] << pipeline->getComputationResolution()[1];
+  std::cout << frame << "," << pipeline->getComputationResolution()[0] << "," << pipeline->getComputationResolution()[1];
   for (int i = 1; i < 6; i++){
     std::cout << "," << std::chrono::duration<double>(timings[i] - timings[i-1]).count();
   }

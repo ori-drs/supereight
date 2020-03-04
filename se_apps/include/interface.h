@@ -609,7 +609,7 @@ class CloudReader: public DepthReader{
           cloud.push_back(point);
       }
 
-      return false;
+      return true;
     }
 
     inline bool readNextData(uchar3* rgb_image, uint16_t* depth_image, Eigen::Matrix4f& pose) {

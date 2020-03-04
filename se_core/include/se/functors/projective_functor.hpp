@@ -110,7 +110,7 @@ namespace functor {
         block->active(is_visible);
       }
 
-      void update_block_lidar(se::VoxelBlock<FieldType> * block, const float voxel_size) {
+      void update_block_cloud(se::VoxelBlock<FieldType> * block, const float voxel_size) {
 
         const Eigen::Vector3i blockCoord = block->coordinates();
         const Eigen::Vector3f delta = _Tcw.rotationMatrix() * Eigen::Vector3f(voxel_size, 0, 0);
@@ -172,7 +172,7 @@ namespace functor {
         }
       }
 
-      void update_node_lidar(se::Node<FieldType> * node, const float voxel_size) { 
+      void update_node_cloud(se::Node<FieldType> * node, const float voxel_size) { 
         const Eigen::Vector3i voxel = Eigen::Vector3i(unpack_morton(node->code_));
         const Eigen::Vector3f delta = _Tcw.rotationMatrix() * Eigen::Vector3f::Constant(0.5f * voxel_size * node->side_);
         const Eigen::Vector3f delta_c = _K.topLeftCorner<3,3>() * delta;
@@ -200,8 +200,7 @@ namespace functor {
         size_t list_size = _active_list.size();
 #pragma omp parallel for
         for(unsigned int i = 0; i < list_size; ++i){
-          // update_block(_active_list[i], voxel_size);
-          update_block_lidar(_active_list[i], voxel_size);
+          update_block(_active_list[i], voxel_size);
         }
         _active_list.clear();
 
@@ -209,8 +208,26 @@ namespace functor {
         list_size = nodes_list.size();
 #pragma omp parallel for
           for(unsigned int i = 0; i < list_size; ++i){
-            // update_node(nodes_list[i], voxel_size);
-            update_node_lidar(nodes_list[i], voxel_size);
+            update_node(nodes_list[i], voxel_size);
+         }
+      }
+
+      void applyCloud() {
+
+        build_active_list();
+        const float voxel_size = _map.dim() / _map.size();
+        size_t list_size = _active_list.size();
+#pragma omp parallel for
+        for(unsigned int i = 0; i < list_size; ++i){
+          update_block_cloud(_active_list[i], voxel_size);
+        }
+        _active_list.clear();
+
+        auto& nodes_list = _map.getNodesBuffer();
+        list_size = nodes_list.size();
+#pragma omp parallel for
+          for(unsigned int i = 0; i < list_size; ++i){
+            update_node_cloud(nodes_list[i], voxel_size);
          }
       }
 
@@ -232,6 +249,17 @@ namespace functor {
     projective_functor<FieldType, MapT, UpdateF> 
       it(map, funct, Tcw, K, framesize);
     it.apply();
+  }
+
+  template <typename FieldType, template <typename FieldT> class MapT, 
+            typename UpdateF>
+  void projective_map_cloud(MapT<FieldType>& map, const Sophus::SE3f& Tcw, 
+          const Eigen::Matrix4f& K, const Eigen::Vector2i framesize,
+          UpdateF funct) {
+
+    projective_functor<FieldType, MapT, UpdateF> 
+      it(map, funct, Tcw, K, framesize);
+    it.applyCloud();
   }
 }
 }
