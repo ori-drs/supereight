@@ -70,6 +70,25 @@ namespace functor {
             in_frustum_predicate);
       }
 
+      void build_active_list_cloud() {
+        using namespace std::placeholders;
+        /* Retrieve the active list */ 
+        const se::MemoryPool<se::VoxelBlock<FieldType> >& block_array = 
+          _map.getBlockBuffer();
+
+        /* Predicates definition */
+        const float voxel_size = _map.dim()/_map.size();
+        auto in_frustum_predicate = 
+          std::bind(algorithms::in_frustum_cloud<se::VoxelBlock<FieldType>>, _1, 
+              voxel_size, _K*_Tcw.matrix(), _frame_size); 
+        auto is_active_predicate = [](const se::VoxelBlock<FieldType>* b) {
+          return b->active();
+        };
+
+        algorithms::filter(_active_list, block_array, is_active_predicate,
+            in_frustum_predicate);
+      }
+
       void update_block(se::VoxelBlock<FieldType> * block, const float voxel_size) {
 
         const Eigen::Vector3i blockCoord = block->coordinates();
@@ -214,7 +233,7 @@ namespace functor {
 
       void applyCloud() {
 
-        build_active_list();
+        build_active_list_cloud();
         const float voxel_size = _map.dim() / _map.size();
         size_t list_size = _active_list.size();
 #pragma omp parallel for
